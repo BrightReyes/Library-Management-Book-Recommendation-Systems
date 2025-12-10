@@ -30,32 +30,36 @@ def display_recent_transactions(borrow_records, get_books_func, target_frame):
     for widget in target_frame.winfo_children():
         widget.destroy()
 
-    if not borrow_records:
+    # New implementation: load recent loans from API if provided; fall back to borrow_records param
+    from api_client import get_loans
+
+    try:
+        loans = get_loans()
+    except Exception:
+        loans = borrow_records or []
+
+    if not loans:
         tk.Label(target_frame, text="No recent transactions found.", bg="white", fg="#7f8c8d",
                  font=("Segoe UI", 10)).pack(padx=20, pady=20)
         return
 
-    # Display the last few records
-    for i, record in enumerate(borrow_records[-3:]):
-
-        # Mock status for display consistency
-        # In a real app, you'd check a 'return_date' field, but here we mock it based on index
-        is_return = i % 2 == 1
-
-        book_title = next((b['title'] for b in get_books_func() if b['id'] == record['book_id']), "Unknown Book")
+    # Display the last few loans
+    for record in loans[-5:]:
+        is_return = record.get('status') == 'returned'
+        book_title = record.get('book_title') or 'Unknown'
 
         if is_return:
             action = "Return"
             icon = "↩️"
-            color = "#2ecc71"  # Green
-            details = f"{record['student_name']} (STU{record['book_id'] - 100:03d})"
-            date_str = f"{record['due_date']} (Returned)"
+            color = "#2ecc71"
+            details = f"User {record.get('user')}"
+            date_str = record.get('return_date') or ''
         else:
             action = "Checkout"
             icon = "📤"
-            color = "#3498db"  # Blue
-            details = f"{record['student_name']} (STU{record['book_id'] - 100:03d}) • Due: {record['due_date']}"
-            date_str = record['borrow_date']
+            color = "#3498db"
+            details = f"User {record.get('user')} • Due: {record.get('due_date')}"
+            date_str = record.get('borrow_date')
 
         item_frame = tk.Frame(target_frame, bg="white", padx=15, pady=10)
         item_frame.pack(fill="x", pady=1, side="top")
@@ -87,8 +91,29 @@ def create_transactions_ui(parent_frame, get_books_func, get_borrow_records_func
     frame = tk.Frame(parent_frame, bg="#f5f7fa")
     frame.place(relwidth=1, relheight=1)
 
+    # Create canvas with scrollbar for transactions scrolling
+    trans_canvas = tk.Canvas(frame, bg="#f5f7fa", highlightthickness=0)
+    trans_scrollbar = tk.Scrollbar(frame, orient="vertical", command=trans_canvas.yview)
+    trans_scrollable = tk.Frame(trans_canvas, bg="#f5f7fa")
+
+    trans_scrollable.bind(
+        "<Configure>",
+        lambda e: trans_canvas.configure(scrollregion=trans_canvas.bbox("all"))
+    )
+
+    trans_canvas.create_window((0, 0), window=trans_scrollable, anchor="nw")
+    trans_canvas.configure(yscrollcommand=trans_scrollbar.set)
+
+    trans_canvas.pack(side="left", fill="both", expand=True)
+    trans_scrollbar.pack(side="right", fill="y")
+
+    # Enable mouse wheel scrolling
+    def on_trans_mousewheel(event):
+        trans_canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+    trans_canvas.bind_all("<MouseWheel>", on_trans_mousewheel)
+
     # ---------------- PAGE HEADER ----------------
-    header = tk.Frame(frame, bg="#f5f7fa")
+    header = tk.Frame(trans_scrollable, bg="#f5f7fa")
     header.pack(fill="x", padx=20, pady=(10, 5))
 
     tk.Label(
@@ -108,7 +133,7 @@ def create_transactions_ui(parent_frame, get_books_func, get_borrow_records_func
     ).pack(anchor="w")
 
     # ---------------- QUICK TRANSACTION CARD ----------------
-    quick_trans_card = tk.Frame(frame, bg="white", padx=20, pady=20, bd=1, relief="solid")
+    quick_trans_card = tk.Frame(trans_scrollable, bg="white", padx=20, pady=20, bd=1, relief="solid")
     quick_trans_card.pack(fill="x", padx=20, pady=(20, 0))
 
     tk.Label(
@@ -183,8 +208,12 @@ def create_transactions_ui(parent_frame, get_books_func, get_borrow_records_func
             messagebox.showerror("Error", "Please enter both Book ID and Student ID.")
             return
 
-        # Call external command for business logic
-        borrow_cmd(b_id, s_id)
+        # Call external command for business logic (expects book id integer or isbn)
+        try:
+            # If the borrow_cmd expects a book id int, ensure conversion
+            borrow_cmd(b_id, s_id)
+        except Exception as e:
+            messagebox.showerror('Error', f'Checkout failed: {e}')
 
         # Clear fields
         book_id_entry.delete(0, tk.END)
@@ -239,7 +268,10 @@ def create_transactions_ui(parent_frame, get_books_func, get_borrow_records_func
             return
 
         # Call external command for business logic (only passing Book ID)
-        return_cmd(b_id)
+        try:
+            return_cmd(b_id)
+        except Exception as e:
+            messagebox.showerror('Error', f'Return failed: {e}')
 
         # Clear fields
         return_book_id_entry.delete(0, tk.END)
@@ -260,7 +292,7 @@ def create_transactions_ui(parent_frame, get_books_func, get_borrow_records_func
     ).pack(side="right", pady=10, padx=10)
     # ---------------- RECENT TRANSACTIONS ----------------
 
-    recent_trans_container = tk.Frame(frame, bg="#f5f7fa")
+    recent_trans_container = tk.Frame(trans_scrollable, bg="#f5f7fa")
     recent_trans_container.pack(fill="both", expand=True, padx=20, pady=20)
 
     tk.Label(

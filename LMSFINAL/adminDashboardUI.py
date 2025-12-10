@@ -7,118 +7,140 @@ from book_management_ui import create_book_management_ui
 from user_management_ui import create_user_management_ui, get_current_user_table, open_add_user_modal
 from transactions_ui import create_transactions_ui, get_transaction_list_frame, display_recent_transactions
 
-# ------------------ MOCK DATA AND FUNCTIONS ------------------
-# ... (MOCK DATA and CRUD functions remain unchanged) ...
-books = [
-    {"id": 101, "title": "The Great Gatsby", "author": "F. Scott Fitzgerald", "genre": "Classic",
-     "status": "Available"},
-    {"id": 102, "title": "1984", "author": "George Orwell", "genre": "Dystopian", "status": "Borrowed"},
-    {"id": 103, "title": "To Kill a Mockingbird", "author": "Harper Lee", "genre": "Classic", "status": "Borrowed"},
-    {"id": 104, "title": "Sapiens", "author": "Yuval Noah Harari", "genre": "History", "status": "Available"},
-    {"id": 105, "title": "Educated", "author": "Tara Westover", "genre": "Memoir", "status": "Available"},
-]
-
-borrow_records = [
-    {"book_id": 102, "student_name": "Alice Smith",
-     "borrow_date": (datetime.datetime.now() - timedelta(days=20)).strftime("%Y-%m-%d"),
-     "due_date": (datetime.datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")},  # Overdue
-    {"book_id": 103, "student_name": "Bob Johnson",
-     "borrow_date": (datetime.datetime.now() - timedelta(days=5)).strftime("%Y-%m-%d"),
-     "due_date": (datetime.datetime.now() + timedelta(days=10)).strftime("%Y-%m-%d")},  # Active
-    {"book_id": 104, "student_name": "Charlie Brown",
-     "borrow_date": (datetime.datetime.now() - timedelta(days=2)).strftime("%Y-%m-%d"),
-     "due_date": (datetime.datetime.now() + timedelta(days=13)).strftime("%Y-%m-%d")},  # Active
-]
-
-students = [
-    {"id": 201, "name": "Alice Smith", "email": "alice@uni.edu"},
-    {"id": 202, "name": "Bob Johnson", "email": "bob@uni.edu"},
-    {"id": 203, "name": "Charlie Brown", "email": "charlie@uni.edu"},
-]
-
-
-# Simple CRUD mocks (essential for the provided code to run)
-def add_book(title, author, genre):
-    new_id = max(b['id'] for b in books) + 1 if books else 101
-    books.append({"id": new_id, "title": title, "author": author, "genre": genre, "status": "Available"})
-
-
-def edit_book(id, title, author, genre):
-    book = next(b for b in books if b["id"] == id)
-    book.update({"title": title, "author": author, "genre": genre})
-
-
-def delete_book(id):
-    global books
-    books = [b for b in books if b["id"] != id]
+# Use API client as the single source of truth
+from api_client import (
+    get_books as api_get_books,
+    create_book as api_create_book,
+    update_book as api_update_book,
+    delete_book as api_delete_book,
+    get_users as api_get_users,
+    create_user as api_create_user,
+    update_user as api_update_user,
+    delete_user as api_delete_user,
+    get_loans as api_get_loans,
+    create_loan as api_create_loan,
+    return_loan as api_return_loan,
+)
 
 
 def get_books():
-    return books
+    return api_get_books()
 
 
 def get_overdue_books():
+    loans = api_get_loans()
     today = datetime.datetime.now().date()
-    overdue_records = [r for r in borrow_records if
-                       datetime.datetime.strptime(r["due_date"], "%Y-%m-%d").date() < today]
-    return overdue_records
+    overdue = [l for l in loans if l.get('status') == 'borrowed' and l.get('due_date') and datetime.datetime.fromisoformat(l['due_date']).date() < today]
+    return overdue
 
 
-def borrow_book(book_id, student_name):
-    book_id = int(book_id)
-    book = next((b for b in books if b['id'] == book_id and b['status'] == "Available"), None)
-    if book:
-        book['status'] = "Borrowed"
-        borrow_records.append({
-            "book_id": book_id,
-            "student_name": student_name,
-            "borrow_date": datetime.datetime.now().strftime("%Y-%m-%d"),
-            "due_date": (datetime.datetime.now() + timedelta(days=14)).strftime("%Y-%m-%d")
-        })
-        return True
-    return False
+def borrow_book(book_id_or_isbn, student_identifier=None):
+    # student_identifier: can be user id (int) or username/email
+    # book_id_or_isbn: can be book id (int) or ISBN string
+    
+    # Find book by ID or ISBN
+    books = api_get_books()
+    book = None
+    try:
+        # Try as book ID first
+        bid = int(book_id_or_isbn)
+        book = next((b for b in books if b['id'] == bid), None)
+    except ValueError:
+        # Try as ISBN
+        book = next((b for b in books if b.get('isbn') == book_id_or_isbn), None)
+    
+    if not book:
+        raise Exception(f"Book not found: {book_id_or_isbn}")
+    
+    if book.get('available', 0) <= 0:
+        raise Exception(f"Book '{book.get('title')}' is not available")
+    
+    payload = {'book': book['id']}
+    if student_identifier:
+        # try to determine user id
+        try:
+            payload['user'] = int(student_identifier)
+        except ValueError:
+            # try to resolve by username/email
+            users = api_get_users()
+            found = None
+            for u in users:
+                if u.get('username') == student_identifier or u.get('email') == student_identifier:
+                    found = u
+                    break
+            if found:
+                payload['user'] = found['id']
+            else:
+                raise Exception(f"User not found: {student_identifier}")
+    api_create_loan(payload)
+    return True
 
 
-def return_book(book_id):
-    book_id = int(book_id)
-    book = next((b for b in books if b['id'] == book_id and b['status'] == "Borrowed"), None)
-    if book:
-        book['status'] = "Available"
-        global borrow_records
-        borrow_records = [r for r in borrow_records if r['book_id'] != book_id]
-        return True
-    return False
+def return_book(book_id_or_isbn):
+    # find active loan for the book by ID or ISBN
+    books = api_get_books()
+    book = None
+    try:
+        # Try as book ID first
+        bid = int(book_id_or_isbn)
+        book = next((b for b in books if b['id'] == bid), None)
+    except ValueError:
+        # Try as ISBN
+        book = next((b for b in books if b.get('isbn') == book_id_or_isbn), None)
+    
+    if not book:
+        raise Exception(f"Book not found: {book_id_or_isbn}")
+    
+    loans = api_get_loans()
+    active = next((l for l in loans if l.get('book') == book['id'] and l.get('status') == 'borrowed'), None)
+    if not active:
+        raise Exception(f"No active loan found for book '{book.get('title')}'")
+    api_return_loan(active['id'])
+    return True
 
 
-def get_students(): return students
+def get_students():
+    users = api_get_users()
+    # Return the raw user data from API - it already has all needed fields
+    return users
 
 
 def add_student(name, email):
-    new_id = max(s['id'] for s in students) + 1 if students else 201
-    students.append({"id": new_id, "name": name, "email": email})
+    username = email.split('@')[0]
+    payload = {'username': username, 'email': email, 'password': 'changeme'}
+    return api_create_user(payload)
 
 
-def edit_student(id, name, email):
-    student = next(s for s in students if s["id"] == id)
-    student.update({"name": name, "email": email})
+def edit_student(user_id, name, email):
+    payload = {'username': name, 'email': email}
+    return api_update_user(user_id, payload)
 
 
-def delete_student(id):
-    global students
-    students = [s for s in students if s["id"] != id]
+def delete_student(user_id):
+    return api_delete_user(user_id)
 
 
-def get_student_borrowed_books(name):
-    return [r for r in borrow_records if r['student_name'] == name]
+def get_student_borrowed_books(name_or_id):
+    users = api_get_users()
+    user = None
+    try:
+        uid = int(name_or_id)
+        user = next((u for u in users if u['id'] == uid), None)
+    except Exception:
+        user = next((u for u in users if u.get('username') == name_or_id or u.get('email') == name_or_id), None)
+    if not user:
+        return []
+    loans = api_get_loans()
+    return [l for l in loans if l.get('user') == user['id'] and l.get('status') == 'borrowed']
 
 
-def get_student_overdue_books(name):
+def get_student_overdue_books(name_or_id):
+    borrowed = get_student_borrowed_books(name_or_id)
     today = datetime.datetime.now().date()
-    return [r for r in borrow_records if
-            r['student_name'] == name and datetime.datetime.strptime(r["due_date"], "%Y-%m-%d").date() < today]
+    overdue = [l for l in borrowed if l.get('due_date') and datetime.datetime.fromisoformat(l['due_date']).date() < today]
+    return overdue
 
 
-# Note: The original 'modern_button' helper is required for the rest of the code to run.
 def modern_button(parent, text, color, cmd):
     return tk.Button(
         parent, text=text, command=cmd,
@@ -161,17 +183,26 @@ def open_main_ui(username, role="admin"):
 
     tk.Label(
         bottom_frame,
-        text=f"👤 Admin User\n{role.capitalize()}",
+        text=f"👤 {username}\n{role.capitalize()}",
         fg="#2c3e50",
         bg="white",
         font=("Segoe UI", 10),
         pady=10
     ).pack(fill="x")
 
+    def logout():
+        """Logout and return to login screen."""
+        from api_client import set_token
+        if messagebox.askyesno("Logout", "Are you sure you want to logout?"):
+            set_token(None)  # Clear the authentication token
+            app.destroy()
+            import login
+            login.open_login_window()
+
     tk.Button(
         bottom_frame,
         text="  Logout",
-        command=app.quit,  # Placeholder for logout
+        command=logout,
         bg="#ecf0f1",
         fg="#2c3e50",
         activebackground="#bdc3c7",
@@ -271,9 +302,30 @@ def open_main_ui(username, role="admin"):
         return value_label  # Return the label for external updating
 
     # ---------------- Dashboard Content ----------------
+    
+    # Create canvas with scrollbar for dashboard scrolling
+    dashboard_canvas = tk.Canvas(dashboard_frame, bg="#f5f7fa", highlightthickness=0)
+    dashboard_scrollbar = tk.Scrollbar(dashboard_frame, orient="vertical", command=dashboard_canvas.yview)
+    dashboard_scrollable = tk.Frame(dashboard_canvas, bg="#f5f7fa")
+
+    dashboard_scrollable.bind(
+        "<Configure>",
+        lambda e: dashboard_canvas.configure(scrollregion=dashboard_canvas.bbox("all"))
+    )
+
+    dashboard_canvas.create_window((0, 0), window=dashboard_scrollable, anchor="nw")
+    dashboard_canvas.configure(yscrollcommand=dashboard_scrollbar.set)
+
+    dashboard_canvas.pack(side="left", fill="both", expand=True)
+    dashboard_scrollbar.pack(side="right", fill="y")
+
+    # Enable mouse wheel scrolling
+    def on_dashboard_mousewheel(event):
+        dashboard_canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+    dashboard_canvas.bind_all("<MouseWheel>", on_dashboard_mousewheel)
 
     # Top Row: Welcome and Add New Book Button
-    top_bar = tk.Frame(dashboard_frame, bg="#f5f7fa")
+    top_bar = tk.Frame(dashboard_scrollable, bg="#f5f7fa")
     top_bar.pack(fill="x", pady=(0, 20), padx=10)
 
     tk.Label(
@@ -296,7 +348,7 @@ def open_main_ui(username, role="admin"):
     tk.Button(
         top_bar,
         text="➕ Add New Book",
-        command=lambda: switch_frame(books_frame, book_btn),  # Just switch to the new Book Management frame
+        command=lambda: switch_frame(books_frame, book_btn),
         bg="#5d5fef",
         fg="white",
         activebackground="#4a4cce",
@@ -307,38 +359,105 @@ def open_main_ui(username, role="admin"):
     ).pack(side="right")
 
     # Stats Row (Four Cards)
-    stats_frame = tk.Frame(dashboard_frame, bg="#f5f7fa")
+    stats_frame = tk.Frame(dashboard_scrollable, bg="#f5f7fa")
     stats_frame.pack(fill="x", pady=(0, 20), padx=10)
 
     # Variables to hold the dashboard labels for dynamic updates
-    total_books_label = create_card(stats_frame, "Total Books", len(books), "#5d5fef", "📚", "+12% from last month",
+    try:
+        total_books = len(get_books())
+    except Exception:
+        total_books = 0
+    
+    try:
+        total_users = len(get_students())
+    except Exception:
+        total_users = 0
+    
+    try:
+        overdue_count = len(get_overdue_books())
+    except Exception:
+        overdue_count = 0
+    
+    try:
+        all_loans = api_get_loans()
+        checked_out_count = len([l for l in all_loans if l.get('status') == 'borrowed'])
+    except Exception:
+        checked_out_count = 0
+    
+    total_books_label = create_card(stats_frame, "Total Books", total_books, "#5d5fef", "📚", "In library collection",
                                     "#27ae60")
-    total_users_label = create_card(stats_frame, "Total Users", len(students), "#00b894", "👥", "+5% from last month",
+    total_users_label = create_card(stats_frame, "Total Users", total_users, "#00b894", "👥", "Registered users",
                                     "#27ae60")
-    overdue_label = create_card(stats_frame, "Overdue Books", len(get_overdue_books()), "#d63031", "⏰",
-                                "-8% from last week", "#d63031")
-    checked_out_label = create_card(stats_frame, "Books Checked Out Today", len(borrow_records), "#f39c12", "📤",
-                                    "+25% from yesterday", "#27ae60")
+    overdue_label = create_card(stats_frame, "Overdue Books", overdue_count, "#d63031", "⏰",
+                                "Need attention", "#d63031")
+    checked_out_label = create_card(stats_frame, "Currently Checked Out", checked_out_count, "#f39c12", "📤",
+                                    "Active loans", "#27ae60")
 
     # Main Content Area (Graph and Quick Actions)
-    main_content_frame = tk.Frame(dashboard_frame, bg="#f5f7fa")
+    main_content_frame = tk.Frame(dashboard_scrollable, bg="#f5f7fa")
     main_content_frame.pack(fill="both", expand=True, padx=10)
 
     # Left Column (Graph/Activity - 70% width)
     left_col = tk.Frame(main_content_frame, bg="#f5f7fa")
     left_col.pack(side="left", fill="both", expand=True, padx=(0, 10))
 
-    # --- REPLACED: Monthly Borrowing Trends with Recent Activity Card ---
-    # Recent Activity (Placeholder)
+    # Recent Activity
     activity_card = tk.Frame(left_col, bg="white", padx=15, pady=15)
     activity_card.pack(fill="both", expand=True)
     tk.Label(activity_card, text="Recent Activity", bg="white", font=("Segoe UI", 14, "bold")).pack(anchor="w",
                                                                                                     pady=(0, 5))
     tk.Label(activity_card, text="Latest system changes, borrowings, and returns.", bg="white", fg="#7f8c8d",
              font=("Segoe UI", 10)).pack(anchor="w", pady=(0, 10))
-    tk.Label(activity_card, text="[MOCK ACTIVITY LIST CONTENT FILLING SPACE]", bg="white", fg="#7f8c8d",
-             font=("Segoe UI", 12), height=20).pack(
-        fill="both", expand=True)  # Expanded content
+    # Fetch recent activity from loans and display
+    activity_container = tk.Frame(activity_card, bg="white")
+    activity_container.pack(fill="both", expand=True)
+    
+    try:
+        loans = api_get_loans()
+        # Sort by borrow_date, most recent first
+        sorted_loans = sorted(loans, key=lambda x: x.get('borrow_date', ''), reverse=True)[:10]
+        
+        if not sorted_loans:
+            tk.Label(activity_container, text="No recent activity.", bg="white", fg="#7f8c8d",
+                    font=("Segoe UI", 11)).pack(pady=10)
+        else:
+            for loan in sorted_loans:
+                item_frame = tk.Frame(activity_container, bg="white", pady=5)
+                item_frame.pack(fill="x")
+                
+                username = loan.get('username', f"User {loan.get('user')}")
+                book_title = loan.get('book_title', 'Unknown Book')
+                status = loan.get('status', 'unknown')
+                date = loan.get('borrow_date', '')
+                
+                if status == 'borrowed':
+                    icon = "📤"
+                    action = "Borrowed"
+                    color = "#3498db"
+                elif status == 'returned':
+                    icon = "↩️"
+                    action = "Returned"
+                    color = "#2ecc71"
+                else:
+                    icon = "📋"
+                    action = status.title()
+                    color = "#7f8c8d"
+                
+                tk.Label(item_frame, text=icon, bg="white", fg=color, font=("Segoe UI", 12)).pack(side="left", padx=5)
+                text_frame = tk.Frame(item_frame, bg="white")
+                text_frame.pack(side="left", fill="x", expand=True)
+                tk.Label(text_frame, text=f"{username} {action.lower()} '{book_title}'", bg="white", fg="#2c3e50",
+                        font=("Segoe UI", 10, "bold")).pack(anchor="w")
+                if date:
+                    try:
+                        formatted_date = datetime.datetime.fromisoformat(date).strftime('%b %d, %Y')
+                        tk.Label(text_frame, text=formatted_date, bg="white", fg="#7f8c8d",
+                                font=("Segoe UI", 9)).pack(anchor="w")
+                    except:
+                        pass
+    except Exception as e:
+        tk.Label(activity_container, text=f"Error loading activity: {e}", bg="white", fg="#e74c3c",
+                font=("Segoe UI", 10)).pack(pady=10)
 
     # Right Column (Quick Actions - 30% width)
     right_col = tk.Frame(main_content_frame, bg="#f5f7fa", width=300)
@@ -381,10 +500,23 @@ def open_main_ui(username, role="admin"):
     # ---------------- Common Refresh Function (Updated to use new labels) ----------------
     def refresh_all_data():
         # 1. Update Dashboard Stats
-        total_books_label.config(text=len(books))
-        total_users_label.config(text=len(students))
-        overdue_label.config(text=len(get_overdue_books()))
-        checked_out_label.config(text=len(borrow_records))
+        try:
+            total_books_label.config(text=len(api_get_books()))
+        except Exception:
+            total_books_label.config(text="—")
+        try:
+            total_users_label.config(text=len(api_get_users()))
+        except Exception:
+            total_users_label.config(text="—")
+        try:
+            overdue_label.config(text=len(get_overdue_books()))
+        except Exception:
+            overdue_label.config(text="—")
+        try:
+            all_loans = api_get_loans()
+            checked_out_label.config(text=len([l for l in all_loans if l.get('status') == 'borrowed']))
+        except Exception:
+            checked_out_label.config(text="—")
 
         # 2. Refresh Tables (if visible)
         if students_frame.winfo_viewable():
@@ -392,30 +524,16 @@ def open_main_ui(username, role="admin"):
         if transactions_frame.winfo_viewable():
             refresh_transactions()
 
-    # ---------------- Book Management (INTEGRATED) ----------------
+    # Book Management
     create_book_management_ui(books_frame)
 
-    # ---------------- User Management (INTEGRATED) ----------------
+    # User Management
 
-    # 1. Define refresh_students
+    # 1. Define refresh_students (now works with custom layout instead of treeview)
     def refresh_students():
-        table = get_current_user_table()
-        if table:
-            table.delete(*table.get_children())
-            for student in get_students():
-                status = "active" if student['id'] % 2 == 1 else "suspended"
-                borrowed_count = len(get_student_borrowed_books(student['name']))
-                join_date = "2024-01-01"
-                table.insert("", "end", values=(
-                    f"👤 {student['name']}",
-                    f"STU{student['id'] - 200:03d}",
-                    student['email'],
-                    "student",
-                    status,
-                    borrowed_count,
-                    join_date,
-                    "Details"
-                ))
+        # The user management UI handles its own refresh internally
+        # This function is kept for compatibility but may not be needed
+        pass
 
     # 2. Define the SAVE LOGIC handler
     def handle_add_user_logic(data_dict, modal_window):
@@ -445,7 +563,6 @@ def open_main_ui(username, role="admin"):
         messagebox.showinfo("Success", f"User '{name}' added successfully (ID: {student_id}).")
         modal_window.destroy()
 
-    # --- INTEGRATION STEP: Call the new function, passing the necessary callbacks ---
     create_user_management_ui(
         students_frame,
         get_students_func=get_students,
@@ -453,22 +570,24 @@ def open_main_ui(username, role="admin"):
         add_user_cmd=lambda: open_add_user_modal(app, handle_add_user_logic)
     )
 
-    # ---------------- Lending/Returns (Transactions) (INTEGRATED) ----------------
+    # Lending/Returns (Transactions)
 
     # Business Logic Handlers for Borrow/Return
     def handle_borrow_logic(book_id, student_id):
-        if borrow_book(book_id, student_id):
-            messagebox.showinfo("Success", f"Book {book_id} successfully checked out to {student_id}.")
+        try:
+            borrow_book(book_id, student_id)
+            messagebox.showinfo("Success", f"Book successfully checked out!")
             refresh_all_data()
-        else:
-            messagebox.showerror("Error", f"Checkout failed. Book {book_id} may not be available.")
+        except Exception as e:
+            messagebox.showerror("Error", f"Checkout failed: {e}")
 
     def handle_return_logic(book_id):
-        if return_book(book_id):
-            messagebox.showinfo("Success", f"Book {book_id} successfully returned.")
+        try:
+            return_book(book_id)
+            messagebox.showinfo("Success", f"Book successfully returned!")
             refresh_all_data()
-        else:
-            messagebox.showerror("Error", f"Return failed. Book {book_id} may not be currently borrowed.")
+        except Exception as e:
+            messagebox.showerror("Error", f"Return failed: {e}")
 
     # 1. Refresh transactions function
     def refresh_transactions():
@@ -477,13 +596,14 @@ def open_main_ui(username, role="admin"):
         """
         trans_frame = get_transaction_list_frame()
         if trans_frame:
-            display_recent_transactions(borrow_records, get_books, trans_frame)
+            # transactions_ui will itself call the API if available; pass empty fallback
+            display_recent_transactions([], get_books, trans_frame)
 
     # 2. Integration call for the Transaction UI
     create_transactions_ui(
         transactions_frame,
         get_books_func=get_books,
-        get_borrow_records_func=lambda: borrow_records,
+        get_borrow_records_func=lambda: api_get_loans(),
         borrow_cmd=handle_borrow_logic,
         return_cmd=handle_return_logic
     )

@@ -5,38 +5,33 @@ import datetime
 from datetime import timedelta
 from student_book_catalog_ui import create_book_catalog_ui
 from my_loans_ui import create_my_loans_ui
-# --- NEW INTEGRATION IMPORT ---
 from borrowing_history_ui import create_borrowing_history_ui
-
-# --- MOCK DATA (Simulated retrieval for a specific student) ---
-STUDENT_NAME = "John Doe"
-STUDENT_ID = "STU001"
-
-MOCK_STUDENT_BORROWS = [
-    {
-        "title": "To Kill a Mockingbird",
-        "author": "Harper Lee",
-        "due_date": (datetime.datetime.now() + timedelta(days=13)).strftime("%m/%d/%Y"),
-        "days_remaining": 13,
-    },
-    {
-        "title": "Pride and Prejudice",
-        "author": "Jane Austen",
-        "due_date": (datetime.datetime.now() + timedelta(days=8)).strftime("%m/%d/%Y"),
-        "days_remaining": 8,
-    }
-]
+from api_client import get_loans, get_books
 
 
-def get_stats(borrows):
+def get_stats_for_student(student_id, loans):
+    student_loans = [l for l in loans if l.get('user') == student_id]
+    borrowed_count = len([l for l in student_loans if l.get('status') == 'borrowed'])
+    returned_count = len([l for l in student_loans if l.get('status') == 'returned'])
+    
+    overdue = 0
+    total_fines = 0.0
+    for l in student_loans:
+        total_fines += float(l.get('fine', 0) or 0)
+        if l.get('status') == 'borrowed' and l.get('due_date'):
+            try:
+                due = datetime.datetime.fromisoformat(l['due_date'])
+                if due.date() < datetime.datetime.now().date():
+                    overdue += 1
+            except Exception:
+                pass
+    
     return {
-        "borrowed": len(borrows),
-        "fines": "$0.00",
-        "reads": 24
+        'borrowed': borrowed_count,
+        'fines': f"${total_fines:.2f}",
+        'reads': returned_count,
+        'overdue': overdue
     }
-
-
-MOCK_STATS = get_stats(MOCK_STUDENT_BORROWS)
 
 
 def modern_button_plain(parent, text, cmd):
@@ -52,14 +47,20 @@ def modern_button_plain(parent, text, cmd):
 
 
 class StudentPortalApp(tk.Tk):
-    def __init__(self):
+    def __init__(self, user_info=None):
         super().__init__()
         self.title("Library Portal - Student Access")
         self.geometry("1200x800")
         self.config(bg="#f5f7fa")
         self.resizable(True, True)
 
-        self.current_student_name = STUDENT_NAME
+        # Use authenticated user info
+        if user_info:
+            self.current_student_id = user_info.get('id')
+            self.current_student_name = user_info.get('username', 'Student')
+        else:
+            self.current_student_id = None
+            self.current_student_name = 'Student'
 
         # Store button references for reliable navigation
         self.nav_buttons = {}
@@ -112,9 +113,10 @@ class StudentPortalApp(tk.Tk):
         bottom_frame = tk.Frame(sidebar, bg="#FFFFFF", bd=0, highlightthickness=1, highlightbackground="#e0e0e0")
         bottom_frame.pack(side="bottom", fill="x", pady=(10, 0))
 
+        user_id_display = f"ID: {self.current_student_id}" if self.current_student_id else "Student"
         tk.Label(
             bottom_frame,
-            text=f"👤 {STUDENT_NAME}\n{STUDENT_ID}",
+            text=f"👤 {self.current_student_name}\n{user_id_display}",
             fg="#2c3e50",
             bg="white",
             font=("Segoe UI", 10, "bold"),
@@ -124,7 +126,7 @@ class StudentPortalApp(tk.Tk):
         tk.Button(
             bottom_frame,
             text="➜ Logout",
-            command=self.quit,
+            command=self.logout,
             bg="#ecf0f1",
             fg="#2c3e50",
             activebackground="#bdc3c7",
@@ -152,17 +154,28 @@ class StudentPortalApp(tk.Tk):
         btn.pack(fill="x", pady=2)
         return btn
 
+    def logout(self):
+        """Logout and return to login screen."""
+        from api_client import set_token
+        if messagebox.askyesno("Logout", "Are you sure you want to logout?"):
+            set_token(None)  # Clear the authentication token
+            self.destroy()
+            import login
+            login.open_login_window()
+
     def student_borrow_book(self, book_id, student_name):
-        """Mocks the business logic for borrowing a book and refreshes the UI."""
-        if messagebox.askyesno("Confirm Borrow", f"Borrowing book ID {book_id}?"):
-            # In a real app: update database here
-            messagebox.showinfo("Success", f"Mock borrow of Book ID {book_id} processed.")
+        """Handles the business logic for borrowing a book and refreshes the UI."""
+        from api_client import create_loan
 
-            # Re-load dashboard to reflect potential changes (crude state management)
+        try:
+            payload = {'book': int(book_id)}
+            create_loan(payload)
+            messagebox.showinfo("Success", f"Book borrowed successfully!")
+            # Refresh all views to show updated data
             self._load_dashboard_content(self.dashboard_frame)
-
-            # Re-load catalog to reflect availability changes
             self.load_catalog_content(self.book_catalog_frame)
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to borrow book: {e}")
 
     def show_frame(self, frame, btn=None):
 
@@ -188,10 +201,10 @@ class StudentPortalApp(tk.Tk):
         elif frame == self.book_catalog_frame:
             self.load_catalog_content(frame)
         elif frame == self.my_loans_frame:
-            create_my_loans_ui(frame)
+            create_my_loans_ui(frame, self.current_student_id)
         elif frame == self.history_frame:
             # *** FIX: Load the external Borrowing History component ***
-            create_borrowing_history_ui(frame)
+            create_borrowing_history_ui(frame, self.current_student_id)
 
     def _create_content_area(self):
         # The content frames are created and positioned in show_frame.
@@ -201,14 +214,35 @@ class StudentPortalApp(tk.Tk):
         for widget in frame.winfo_children():
             widget.destroy()
 
+        # Create canvas with scrollbar for scrolling functionality
+        canvas = tk.Canvas(frame, bg="#f5f7fa", highlightthickness=0)
+        scrollbar = tk.Scrollbar(frame, orient="vertical", command=canvas.yview)
+        scrollable_frame = tk.Frame(canvas, bg="#f5f7fa")
+
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        # Enable mouse wheel scrolling
+        def on_mousewheel(event):
+            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+        canvas.bind_all("<MouseWheel>", on_mousewheel)
+
         # ---------------- MAIN HEADER ----------------
-        tk.Label(frame, text=f"Welcome back, {STUDENT_NAME}!", font=("Segoe UI", 28, "bold"), bg="#f5f7fa",
-                 fg="#2c3e50").pack(anchor="w", padx=30, pady=(20, 5))
-        tk.Label(frame, text="Here's your library overview", font=("Segoe UI", 12), bg="#f5f7fa", fg="#7f8c8d").pack(
+        tk.Label(scrollable_frame, text=f"Welcome back, {self.current_student_name}!", font=("Segoe UI", 28, "bold"), bg="#f5f7fa",
+             fg="#2c3e50").pack(anchor="w", padx=30, pady=(20, 5))
+        tk.Label(scrollable_frame, text="Here's your library overview", font=("Segoe UI", 12), bg="#f5f7fa", fg="#7f8c8d").pack(
             anchor="w", padx=30, pady=(0, 20))
 
         # ---------------- STATS ROW ----------------
-        stats_row = tk.Frame(frame, bg="#f5f7fa", padx=20)
+        stats_row = tk.Frame(scrollable_frame, bg="#f5f7fa", padx=20)
         stats_row.pack(fill="x", pady=10)
 
         # ... (create_stat_card definitions remain here) ...
@@ -229,12 +263,20 @@ class StudentPortalApp(tk.Tk):
 
             return card
 
-        create_stat_card(stats_row, "Books Borrowed", MOCK_STATS["borrowed"], "Currently checked out", "📘", "#5d5fef")
-        create_stat_card(stats_row, "Pending Fines", MOCK_STATS["fines"], "All clear!", "⏰", "#2ecc71")
-        create_stat_card(stats_row, "Books Read", MOCK_STATS["reads"], "This year", "📚", "#9b59b6")
+        # Load loans for current student and compute stats
+        try:
+            loans = get_loans()
+        except Exception:
+            loans = []
+
+        stats = get_stats_for_student(self.current_student_id, loans) if self.current_student_id else {'borrowed': 0, 'fines': "$0.00", 'reads': 0, 'overdue': 0}
+
+        create_stat_card(stats_row, "Books Borrowed", stats["borrowed"], "Currently checked out", "📘", "#5d5fef")
+        create_stat_card(stats_row, "Pending Fines", stats["fines"], "All clear!", "⏰", "#2ecc71")
+        create_stat_card(stats_row, "Books Read", stats["reads"], "This year", "📚", "#9b59b6")
 
         # ---------------- MAIN CONTENT WRAPPER ----------------
-        main_wrapper = tk.Frame(frame, bg="#f5f7fa", padx=30, pady=10)
+        main_wrapper = tk.Frame(scrollable_frame, bg="#f5f7fa", padx=30, pady=10)
         main_wrapper.pack(fill="both", expand=True)
 
         # --- Currently Borrowed Section ---
@@ -255,7 +297,15 @@ class StudentPortalApp(tk.Tk):
         borrowed_list = tk.Frame(borrowed_card, bg="white", padx=15, pady=10)
         borrowed_list.pack(fill="x")
 
-        for book in MOCK_STUDENT_BORROWS:
+        # Display actual borrowed loans for the student
+        try:
+            loans = get_loans()
+        except Exception:
+            loans = []
+
+        student_loans = [l for l in loans if l.get('user') == self.current_student_id]
+
+        for l in student_loans:
             item_frame = tk.Frame(borrowed_list, bg="white", padx=10, pady=10)
             item_frame.pack(fill="x", pady=5)
 
@@ -264,17 +314,27 @@ class StudentPortalApp(tk.Tk):
             text_frame = tk.Frame(item_frame, bg="white")
             text_frame.pack(side="left", fill="x", expand=True)
 
-            tk.Label(text_frame, text=book["title"], bg="white", fg="#2c3e50", font=("Segoe UI", 11, "bold")).pack(
-                anchor="w")
-            tk.Label(text_frame, text=book["author"], bg="white", fg="#7f8c8d", font=("Segoe UI", 9)).pack(anchor="w")
+            title = l.get('book_title') or l.get('book', '')
+            author = l.get('book_author', '')
+
+            tk.Label(text_frame, text=title, bg="white", fg="#2c3e50", font=("Segoe UI", 11, "bold")).pack(anchor="w")
+            tk.Label(text_frame, text=author, bg="white", fg="#7f8c8d", font=("Segoe UI", 9)).pack(anchor="w")
 
             due_frame = tk.Frame(item_frame, bg="white")
             due_frame.pack(side="right", padx=10)
 
-            tk.Label(due_frame, text=f"Due {book['due_date']}", bg="white", fg="#7f8c8d", font=("Segoe UI", 10)).pack(
-                anchor="e")
-            tk.Label(due_frame, text=f"{book['days_remaining']} days remaining", bg="white", fg="#e74c3c",
-                     font=("Segoe UI", 9, "bold")).pack(anchor="e")
+            due_date = l.get('due_date') or ''
+            days_remaining = ''
+            try:
+                if due_date:
+                    due_dt = datetime.datetime.fromisoformat(due_date)
+                    delta = (due_dt.date() - datetime.datetime.now().date()).days
+                    days_remaining = f"{delta} days remaining" if delta >= 0 else f"{abs(delta)} days overdue"
+            except Exception:
+                pass
+
+            tk.Label(due_frame, text=f"Due {due_date}" if due_date else "", bg="white", fg="#7f8c8d", font=("Segoe UI", 10)).pack(anchor="e")
+            tk.Label(due_frame, text=days_remaining, bg="white", fg="#e74c3c", font=("Segoe UI", 9, "bold")).pack(anchor="e")
 
         ttk.Separator(borrowed_card, orient='horizontal').pack(fill='x', padx=15, pady=5)
 
@@ -309,19 +369,9 @@ class StudentPortalApp(tk.Tk):
             switch_to_catalog
         ).pack(pady=10)
 
-        # Mock Image Cards placeholder (to maintain height)
-        mock_images_frame = tk.Frame(browse_card, bg="white", padx=15)
-        mock_images_frame.pack(fill="x", pady=(0, 15))  # Applied padding in pack()
-        tk.Label(mock_images_frame, text="[Placeholder for Catalog Cards]", bg="#f5f7fa", fg="#7f8c8d", height=5).pack(
-            fill="x")
-
     def load_catalog_content(self, frame):
         for widget in frame.winfo_children():
             widget.destroy()
-
-        # We need a mock borrow command since this app does not have the admin's logic
-        def mock_borrow_logic(book_id, student_name):
-            messagebox.showinfo("Borrow", f"Mock Borrow: {student_name} requesting Book ID {book_id}")
 
         # Call the external catalog UI creator
         create_book_catalog_ui(

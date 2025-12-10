@@ -183,82 +183,153 @@ def create_user_management_ui(parent_frame, get_students_func, get_borrowed_func
     )
     search_entry.pack(side="left", fill="x", expand=True, padx=5, pady=10)
     search_entry.insert(0, "Search by name, student ID, or email...")
+    
+    # Placeholder logic for search
+    def on_search_focus_in(event):
+        if search_entry.get() == "Search by name, student ID, or email...":
+            search_entry.delete(0, tk.END)
+            search_entry.config(fg="#000000")
+    
+    def on_search_focus_out(event):
+        if not search_entry.get():
+            search_entry.insert(0, "Search by name, student ID, or email...")
+            search_entry.config(fg="#a0a0a0")
+    
+    search_entry.config(fg="#a0a0a0")
+    search_entry.bind("<FocusIn>", on_search_focus_in)
+    search_entry.bind("<FocusOut>", on_search_focus_out)
+    
+    # Bind real-time search
+    def on_search_change(event):
+        search_text = search_entry.get()
+        refresh_user_table(search_text)
+    
+    search_entry.bind("<KeyRelease>", on_search_change)
 
     # ---------------- MAIN TABLE CARD ----------------
     card = tk.Frame(frame, bg="white", bd=1, relief="solid")
     card.pack(fill="both", expand=True, padx=20, pady=(0, 20))
 
-    # Title with total count (mock)
-    tk.Label(
-        card,
+    # Title with total count
+    title_frame = tk.Frame(card, bg="white")
+    title_frame.pack(fill="x", padx=15, pady=10)
+    
+    user_count_label = tk.Label(
+        title_frame,
         text=f"All Users ({len(get_students_func())})",
         font=("Segoe UI", 16, "bold"),
         bg="white",
         fg="#2c3e50"
-    ).pack(anchor="w", padx=15, pady=10)
+    )
+    user_count_label.pack(side="left")
 
-    # Define table columns
-    columns = ("Name", "Student ID", "Email", "Role", "Status", "Books Out", "Join Date", "Actions")
-    user_table = ttk.Treeview(card, columns=columns, show="headings", height=15)
+    # Create scrollable container for user list
+    list_canvas = tk.Canvas(card, bg="white", highlightthickness=0)
+    list_scrollbar = tk.Scrollbar(card, orient="vertical", command=list_canvas.yview)
+    scrollable_list = tk.Frame(list_canvas, bg="white")
 
-    # Set global reference
-    user_management_table = user_table
+    scrollable_list.bind(
+        "<Configure>",
+        lambda e: list_canvas.configure(scrollregion=list_canvas.bbox("all"))
+    )
 
-    # Configure headings
-    user_table.heading("Name", text="Name")
-    user_table.heading("Student ID", text="Student ID")
-    user_table.heading("Email", text="Email")
-    user_table.heading("Role", text="Role")
-    user_table.heading("Status", text="Status")
-    user_table.heading("Books Out", text="Books Out", anchor="center")
-    user_table.heading("Join Date", text="Join Date")
-    user_table.heading("Actions", text="Actions", anchor="center")
+    list_canvas.create_window((0, 0), window=scrollable_list, anchor="nw")
+    list_canvas.configure(yscrollcommand=list_scrollbar.set)
 
-    # Configure column widths
-    user_table.column("Name", width=150)
-    user_table.column("Student ID", width=100)
-    user_table.column("Email", width=200)
-    user_table.column("Role", width=80)
-    user_table.column("Status", width=90, stretch=False, anchor="center")
-    user_table.column("Books Out", width=90, stretch=False, anchor="center")
-    user_table.column("Join Date", width=100)
-    user_table.column("Actions", width=100, stretch=False, anchor="center")
+    list_canvas.pack(side="left", fill="both", expand=True, padx=15, pady=10)
+    list_scrollbar.pack(side="right", fill="y", pady=10)
 
-    user_table.pack(fill="both", expand=True, padx=15, pady=10)
+    # Enable mouse wheel scrolling
+    def on_list_mousewheel(event):
+        list_canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+    list_canvas.bind_all("<MouseWheel>", on_list_mousewheel)
+
+    # Header row
+    header_row = tk.Frame(scrollable_list, bg="#f5f7fa", height=40)
+    header_row.pack(fill="x", pady=(0, 5))
+    
+    tk.Label(header_row, text="Name", bg="#f5f7fa", fg="#2c3e50", font=("Segoe UI", 10, "bold"), width=18, anchor="w").pack(side="left", padx=(5, 10))
+    tk.Label(header_row, text="Student ID", bg="#f5f7fa", fg="#2c3e50", font=("Segoe UI", 10, "bold"), width=11, anchor="w").pack(side="left", padx=(0, 10))
+    tk.Label(header_row, text="Email", bg="#f5f7fa", fg="#2c3e50", font=("Segoe UI", 10, "bold"), width=23, anchor="w").pack(side="left", padx=(0, 10))
+    tk.Label(header_row, text="Role", bg="#f5f7fa", fg="#2c3e50", font=("Segoe UI", 10, "bold"), width=8, anchor="w").pack(side="left", padx=(35, 10))
+    tk.Label(header_row, text="Books Out", bg="#f5f7fa", fg="#2c3e50", font=("Segoe UI", 10, "bold"), width=9, anchor="center").pack(side="left", padx=(35, 10))
+    tk.Label(header_row, text="Actions", bg="#f5f7fa", fg="#2c3e50", font=("Segoe UI", 10, "bold"), width=10, anchor="center").pack(side="left", padx=(70, 5))
+
+    # Set global reference to scrollable list
+    user_management_table = scrollable_list
 
     # --- Data Insertion and Dynamic Widgets ---
 
     # Function to populate/refresh the table
-    def refresh_user_table():
-        user_table.delete(*user_table.get_children())
+    def refresh_user_table(search_term=""):
+        # Clear existing user rows (keep header)
+        for widget in scrollable_list.winfo_children()[1:]:  # Skip header row
+            widget.destroy()
 
-        for student in get_students_func():
-            # Mock data setup: Assume all students are 'student' role, status based on ID parity
-            status = "active" if student['id'] % 2 == 1 else "suspended"
+        students = get_students_func()
+        
+        # Update count
+        user_count_label.config(text=f"All Users ({len(students)})")
+        
+        # Apply search filter
+        if search_term and search_term != "Search by name, student ID, or email...":
+            search_lower = search_term.lower()
+            students = [s for s in students if 
+                       search_lower in s.get('username', '').lower() or
+                       search_lower in s.get('email', '').lower() or
+                       search_lower in f"STU{s['id']:03d}".lower()]
 
-            # 5. FIXED CALL: Use the passed function for borrowed books count
-            borrowed_count = len(get_borrowed_func(student['name']))
-            join_date = "2024-01-01"  # Mock join date
+        for student in students:
+            # Get borrowed books count
+            borrowed_count = len(get_borrowed_func(student['id']))
 
-            # Insert main row data
-            user_table.insert(
-                "",
-                "end",
-                values=(
-                    f"👤 {student['name']}",
-                    f"STU{student['id'] - 200:03d}",  # Generate mock STU ID
-                    student['email'],
-                    "student",
-                    status,
-                    borrowed_count,
-                    join_date,
-                    "Details"
-                ),
-                tags=('status_' + status,)
+            # Create row frame
+            row_frame = tk.Frame(scrollable_list, bg="white", height=50)
+            row_frame.pack(fill="x", pady=2)
+            
+            username = student.get('username', student.get('email', 'Unknown'))
+            student_id_str = f"STU{student['id']:03d}"
+            email = student.get('email', '')
+            role = "admin" if student.get('is_staff', False) else "student"
+            
+            # Columns
+            tk.Label(row_frame, text=f"👤 {username}", bg="white", fg="#2c3e50", font=("Segoe UI", 10), width=18, anchor="w").pack(side="left", padx=(5, 10))
+            tk.Label(row_frame, text=student_id_str, bg="white", fg="#7f8c8d", font=("Segoe UI", 10), width=11, anchor="w").pack(side="left", padx=(0, 10))
+            tk.Label(row_frame, text=email, bg="white", fg="#7f8c8d", font=("Segoe UI", 10), width=23, anchor="w").pack(side="left", padx=(0, 10))
+            tk.Label(row_frame, text=role, bg="white", fg="#7f8c8d", font=("Segoe UI", 10), width=8, anchor="w").pack(side="left", padx=(50, 10))
+            tk.Label(row_frame, text=str(borrowed_count), bg="white", fg="#7f8c8d", font=("Segoe UI", 10), width=9, anchor="center").pack(side="left", padx=(50, 10))
+            
+            # Delete button
+            def make_delete_handler(uid, uname):
+                def handler():
+                    if messagebox.askyesno("Confirm Delete", f"Are you sure you want to delete user '{uname}'?\n\nThis action cannot be undone."):
+                        try:
+                            from api_client import delete_user
+                            delete_user(uid)
+                            refresh_user_table(search_term)
+                            messagebox.showinfo("Success", f"User '{uname}' has been deleted successfully.")
+                        except Exception as e:
+                            messagebox.showerror("Error", f"Failed to delete user: {e}")
+                return handler
+            
+            delete_btn = tk.Button(
+                row_frame,
+                text="🗑️ Delete",
+                command=make_delete_handler(student['id'], username),
+                bg="#e74c3c",
+                fg="white",
+                font=("Segoe UI", 9, "bold"),
+                bd=0,
+                padx=10,
+                pady=5,
+                activebackground="#c0392b",
+                cursor="hand2"
             )
+            delete_btn.pack(side="left", padx=(85, 5))
+            
+            # Separator
+            ttk.Separator(scrollable_list, orient='horizontal').pack(fill='x', padx=10)
 
     refresh_user_table()
-
-    user_table.bind('<Double-1>', lambda e: messagebox.showinfo("Action", "View Details clicked!"))
 
     return frame

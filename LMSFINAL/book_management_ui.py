@@ -2,104 +2,139 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
 
-# --- Global Variables and CRUD Functions ---
-
-# SAMPLE DATA ONLY — This is now a global variable that the app modifies
-sample_books = [
-    {
-        "title": "The Great Gatsby",
-        "author": "F. Scott Fitzgerald",
-        "isbn": "978-0-7432-7356-5",
-        "category": "Fiction",
-        "quantity": 5,
-        "available": 3
-    },
-    {
-        "title": "To Kill a Mockingbird",
-        "author": "Harper Lee",
-        "isbn": "978-0-06-112008-4",
-        "category": "Fiction",
-        "quantity": 4,
-        "available": 2
-    },
-    {
-        "title": "1984",
-        "author": "George Orwell",
-        "isbn": "978-0-452-28423-4",
-        "category": "Science Fiction",
-        "quantity": 6,
-        "available": 6
-    },
-]
+# This UI now uses the Django REST backend as the single source of truth.
+from api_client import get_books, create_book, update_book, delete_book
 
 # Variable to hold the reference to the ttk.Treeview widget
 book_management_table = None
 
 
-# 1. UPDATED MOCK ADD FUNCTION
-def mock_add_book_to_db(data):
-    """Adds the new book data to the global list and refreshes the UI."""
-    global sample_books
-    global book_management_table
 
-    new_book = {
-        "title": data["Title"],
-        "author": data["Author"],
-        "isbn": data["ISBN"],
-        "category": data["Category"],
-        "quantity": data["Quantity"],  # Now an int
-        "available": data["Quantity"]
+# Add Book Function (uses API)
+def add_book_to_db(data):
+    payload = {
+        'title': data['Title'],
+        'author': data['Author'],
+        'isbn': data['ISBN'],
+        'category': data['Category'],
+        'quantity': int(data['Quantity']),
+        'available': int(data['Quantity']),
+        'description': data.get('Description', ''),
+        'cover_url': data.get('Cover Image URL', ''),
     }
+    try:
+        create_book(payload)
+        if book_management_table:
+            refresh_book_table()
+        messagebox.showinfo("Success", f"Book '{data['Title']}' successfully added.")
+    except Exception as e:
+        messagebox.showerror("Error", f"Failed to add book: {e}")
 
-    sample_books.append(new_book)
 
-    if book_management_table:
+# Delete Book Function (uses API)
+def delete_book_from_db(book_id, title):
+    try:
+        delete_book(book_id)
         refresh_book_table()
+        messagebox.showinfo("Deleted", f"Book '{title}' deleted.")
+    except Exception as e:
+        messagebox.showerror("Error", f"Failed to delete book: {e}")
 
-    messagebox.showinfo("Success", f"Book '{data['Title']}' successfully added and displayed.")
+# Edit Book Modal (uses API)
+def edit_book_modal(parent, book_data):
+    # Open a simple modal to edit book fields and save via API
+    win = tk.Toplevel(parent)
+    win.title("Edit Book")
+    win.config(bg="white", padx=20, pady=20)
+    win.geometry("520x420")
+    win.transient(parent)
+    win.grab_set()
 
+    entries = {}
 
-# Mock Delete Function (for action buttons)
-def mock_delete_book(title):
-    global sample_books
-    sample_books = [b for b in sample_books if b["title"] != title]
-    refresh_book_table()
-    messagebox.showinfo("Deleted", f"Book '{title}' deleted from mock list.")
+    def create_label_entry(parent, text, default):
+        tk.Label(parent, text=text, bg='white').pack(anchor='w')
+        e = tk.Entry(parent)
+        e.insert(0, default)
+        e.pack(fill='x', pady=5)
+        entries[text] = e
 
-# Mock Edit Function (opens a new window, simplified logic)
-def mock_edit_book_modal(parent, book_data):
-    messagebox.showinfo("Edit", f"Opening edit modal for: {book_data['title']}. (Actual edit logic would go here)")
+    create_label_entry(win, 'Title', book_data.get('title', ''))
+    create_label_entry(win, 'Author', book_data.get('author', ''))
+    create_label_entry(win, 'ISBN', book_data.get('isbn', ''))
+    create_label_entry(win, 'Category', book_data.get('category', ''))
+    create_label_entry(win, 'Quantity', str(book_data.get('quantity', 1)))
+
+    def save():
+        payload = {
+            'title': entries['Title'].get(),
+            'author': entries['Author'].get(),
+            'isbn': entries['ISBN'].get(),
+            'category': entries['Category'].get(),
+            'quantity': int(entries['Quantity'].get()),
+            'available': int(entries['Quantity'].get()),
+        }
+        try:
+            update_book(book_data['id'], payload)
+            refresh_book_table()
+            win.destroy()
+            messagebox.showinfo('Saved', 'Book updated successfully')
+        except Exception as e:
+            messagebox.showerror('Error', f'Failed to update book: {e}')
+
+    tk.Button(win, text='Save', command=save, bg='#2c3e50', fg='white').pack(pady=10)
     # For a full implementation, this would open a Toplevel window pre-filled with book_data.
 
-# 2. NEW REFRESH FUNCTION
-def refresh_book_table():
-    """Clears and re-populates the book table with the current global data."""
-    global book_management_table
-    global sample_books
+# 2. NEW REFRESH FUNCTION with search and sort support
+_current_sort_column = None
+_current_sort_reverse = False
+_search_term = ""
+_category_filter = "All Categories"
 
-    if book_management_table:
-        # Clear existing entries
-        book_management_table.delete(*book_management_table.get_children())
+def refresh_book_table(search_term="", category_filter="All Categories"):
+    global book_management_table, _search_term, _category_filter
+    _search_term = search_term
+    _category_filter = category_filter
+    
+    if not book_management_table:
+        return
+    try:
+        books = get_books()
+    except Exception as e:
+        messagebox.showerror('Error', f'Failed to load books: {e}')
+        return
 
-        # Insert all current books
-        for i, book in enumerate(sample_books):
-            # We use the title as a unique ID for mock purposes
-            tree_id = book["title"]
+    # Apply search filter
+    if search_term and search_term != "Search by title, author, or ISBN...":
+        search_lower = search_term.lower()
+        books = [b for b in books if 
+                 search_lower in b.get('title', '').lower() or
+                 search_lower in b.get('author', '').lower() or
+                 search_lower in b.get('isbn', '').lower()]
+    
+    # Apply category filter
+    if category_filter and category_filter != "All Categories":
+        books = [b for b in books if b.get('category', '') == category_filter]
+    
+    # Apply current sort if any
+    if _current_sort_column:
+        books = sorted(books, key=lambda x: x.get(_current_sort_column, ''), reverse=_current_sort_reverse)
 
-            book_management_table.insert(
-                "",
-                "end",
-                iid=tree_id, # Set the item ID to the book title for easy lookup
-                values=(
-                    book["title"],
-                    book["author"],
-                    book["isbn"],
-                    book["category"],
-                    book["quantity"],
-                    book["available"],
-                    "✏️  🗑️" # Placeholder text for visual buttons
-                )
+    book_management_table.delete(*book_management_table.get_children())
+    for book in books:
+        tree_id = str(book['id'])
+        book_management_table.insert(
+            '', 'end', iid=tree_id,
+            values=(
+                book.get('title', ''),
+                book.get('author', ''),
+                book.get('isbn', ''),
+                book.get('category', ''),
+                book.get('quantity', 0),
+                book.get('available', 0),
+                '✏️  🗑️'
             )
+        )
 
 
 # --- Helper Function for Consistent Button Styling ---
@@ -296,7 +331,7 @@ def open_add_book_modal(parent):
             data["Cover Image URL"] = ""
 
         # 3. Call DB Handler (This now updates the global list and table)
-        mock_add_book_to_db(data)
+        add_book_to_db(data)
 
         # 4. Close the window
         win.destroy()
@@ -347,10 +382,41 @@ def create_book_management_ui(parent_frame):
     search_entry.pack(side="left", fill="x", expand=True, padx=5, pady=10)
     search_entry.insert(0, "Search by title, author, or ISBN...")
 
+    # Placeholder logic for search
+    def on_search_focus_in(event):
+        if search_entry.get() == "Search by title, author, or ISBN...":
+            search_entry.delete(0, tk.END)
+            search_entry.config(fg="#000000")
+    
+    def on_search_focus_out(event):
+        if not search_entry.get():
+            search_entry.insert(0, "Search by title, author, or ISBN...")
+            search_entry.config(fg="#a0a0a0")
+    
+    search_entry.config(fg="#a0a0a0")
+    search_entry.bind("<FocusIn>", on_search_focus_in)
+    search_entry.bind("<FocusOut>", on_search_focus_out)
+    
+    # Bind real-time search
+    def on_search_change(event):
+        search_text = search_entry.get()
+        cat_value = category.get()
+        refresh_book_table(search_text, cat_value)
+    
+    search_entry.bind("<KeyRelease>", on_search_change)
+
     category = ttk.Combobox(search_frame, values=["All Categories", "Fiction", "Science Fiction", "Romance"],
                             state="readonly", width=20)
     category.set("All Categories")
     category.pack(side="right", padx=10)
+    
+    # Bind category change
+    def on_category_change(event):
+        search_text = search_entry.get()
+        cat_value = category.get()
+        refresh_book_table(search_text, cat_value)
+    
+    category.bind("<<ComboboxSelected>>", on_category_change)
 
     # ---------------- ADD NEW BOOK BUTTON ----------------
     top_btn_frame = tk.Frame(frame, bg="#f5f7fa")
@@ -387,12 +453,32 @@ def create_book_management_ui(parent_frame):
     # **Crucial step: Store the table reference globally**
     book_management_table = table
 
-    table.heading("Title", text="Title")
-    table.heading("Author", text="Author")
-    table.heading("ISBN", text="ISBN")
-    table.heading("Category", text="Category")
-    table.heading("Qty", text="Quantity")
-    table.heading("Available", text="Available")
+    # Sort function
+    def sort_by_column(col):
+        global _current_sort_column, _current_sort_reverse
+        if _current_sort_column == col:
+            _current_sort_reverse = not _current_sort_reverse
+        else:
+            _current_sort_column = col
+            _current_sort_reverse = False
+        refresh_book_table(_search_term, _category_filter)
+
+    # Column mapping for sorting
+    col_map = {
+        "Title": "title",
+        "Author": "author",
+        "ISBN": "isbn",
+        "Category": "category",
+        "Qty": "quantity",
+        "Available": "available"
+    }
+
+    table.heading("Title", text="Title ↕", command=lambda: sort_by_column("title"))
+    table.heading("Author", text="Author ↕", command=lambda: sort_by_column("author"))
+    table.heading("ISBN", text="ISBN ↕", command=lambda: sort_by_column("isbn"))
+    table.heading("Category", text="Category ↕", command=lambda: sort_by_column("category"))
+    table.heading("Qty", text="Quantity ↕", command=lambda: sort_by_column("quantity"))
+    table.heading("Available", text="Available ↕", command=lambda: sort_by_column("available"))
     table.heading("Actions", text="Actions")
 
     table.column("Title", width=200)
@@ -411,13 +497,24 @@ def create_book_management_ui(parent_frame):
         item_id = table.identify_row(event.y)
         column_id = table.identify_column(event.x)
 
-        if item_id and column_id == '#7': # Check if click is in the Actions column (#7)
+        if item_id and column_id == '#7':  # Check if click is in the Actions column (#7)
             item_values = table.item(item_id, 'values')
             book_title = item_values[0]
-
-            # Find the mock book data
-            book_data = next((b for b in sample_books if b['title'] == book_title), None)
-            if not book_data: return
+            # We stored the book id as the iid when inserting
+            try:
+                book_id = int(item_id)
+            except Exception:
+                return
+            # Build a simple book_data dict from the row values
+            book_data = {
+                'id': book_id,
+                'title': item_values[0],
+                'author': item_values[1],
+                'isbn': item_values[2],
+                'category': item_values[3],
+                'quantity': int(item_values[4]) if item_values[4] else 0,
+                'available': int(item_values[5]) if item_values[5] else 0,
+            }
 
             # Determine which icon was clicked based on column position (Rough estimate)
             # You would normally calculate the precise pixel offset here.
@@ -427,11 +524,11 @@ def create_book_management_ui(parent_frame):
             # We assume a click on the left half of the column is EDIT, right half is DELETE
             if event.x < x_offset:
                 # Edit action
-                mock_edit_book_modal(app_root, book_data)
+                edit_book_modal(app_root, book_data)
             else:
                 # Delete action
                 if messagebox.askyesno("Confirm Delete", f"Are you sure you want to delete '{book_title}'?"):
-                    mock_delete_book(book_title)
+                    delete_book_from_db(book_id, book_title)
 
 
     table.bind('<ButtonRelease-1>', item_click_handler)

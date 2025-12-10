@@ -1,10 +1,9 @@
 import tkinter as tk
 from tkinter import messagebox
-from data import users
-# --- IMPORT FINAL MODULES ---
 import adminDashboardUI
 import register
-import student_portal_app  # Import the actual Student App class
+import student_portal_app
+from api_client import login as api_login, get_me, set_token
 
 
 def open_login_window():
@@ -91,23 +90,20 @@ def open_login_window():
     def login_user():
         username = username_entry.get().strip()
         password = password_entry.get().strip()
+        try:
+            data = api_login(username, password)
+            # set_token is handled inside api_client.login
+            user_info = get_me()
 
-        if username in users and users[username]["password"] == password:
-            role = users[username]["role"]
-
-            # --- LAUNCH THE CORRECT PORTAL ---
             login.destroy()
-
-            if role == "admin":
+            if user_info.get('is_staff'):
                 adminDashboardUI.open_main_ui(username)
-            elif role == "student":
-                # *** CORRECT INTEGRATION ***
-                app = student_portal_app.StudentPortalApp()
-                app.mainloop()
             else:
-                messagebox.showerror("Error", "Undefined role.")
-        else:
-            messagebox.showerror("Error", "Invalid email or password.")
+                # Pass the current user info to the StudentPortalApp
+                app = student_portal_app.StudentPortalApp(user_info)
+                app.mainloop()
+        except Exception as e:
+            messagebox.showerror("Error", f"Login failed: {e}")
 
     # Sign In Button
     tk.Button(

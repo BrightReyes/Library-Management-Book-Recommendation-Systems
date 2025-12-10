@@ -2,15 +2,8 @@
 
 import tkinter as tk
 from tkinter import messagebox
-# Import the actual login module to use its function
-import login
+from api_client import create_user, set_token
 
-# The 'from data import add_user' line should remain if your 'data.py' exists.
-from data import add_user
-
-
-# NOTE: We REMOVE the dummy def open_login_window() here.
-# We REMOVE the dummy def add_user() here.
 
 def open_register_window():
     reg = tk.Tk()
@@ -80,16 +73,23 @@ def open_register_window():
 
         fullname = f"{first} {middle} {last}".strip()
 
-        # Call the actual add_user from data.py
-        success = add_user(username, password, fullname)
-
-        if success:
+        # Call the backend API to create user
+        payload = {
+            'username': username,
+            'email': email,
+            'password': password,
+        }
+        try:
+            create_user(payload)
             messagebox.showinfo("Success", "Account created successfully!")
             reg.destroy()
-            # *** CRITICAL: Call the actual function from the imported module ***
-            login.open_login_window()
-        else:
-            messagebox.showerror("Error", "Username already exists!")
+            try:
+                import login as _login
+                _login.open_login_window()
+            except Exception:
+                pass
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to create account: {e}")
 
     # Submit Button (unchanged)
     register_btn = tk.Button(
@@ -117,6 +117,14 @@ def open_register_window():
         bg="white"
     ).pack(side="left")
 
+    def _back_to_signin():
+        reg.destroy()
+        try:
+            import login as _login
+            _login.open_login_window()
+        except Exception:
+            pass
+
     back_btn = tk.Button(
         footer,
         text="Sign In",
@@ -125,8 +133,7 @@ def open_register_window():
         fg="#5d5fef",
         bd=0,
         cursor="hand2",
-        # *** CRITICAL: Call the actual function from the imported module ***
-        command=lambda: [reg.destroy(), login.open_login_window()],
+        command=_back_to_signin,
     )
     back_btn.pack(side="left", padx=3)
 
